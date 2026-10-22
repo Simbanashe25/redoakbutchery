@@ -3,6 +3,18 @@
 `schema.sql` creates the database for the complete POS. It separates categories, products, customers, payment methods, company settings, stock balances, sales, held orders, expenses, day-end reports, inventory movements, receipts, processing batches, stocktakes, and day-close markers into dedicated tables. Sale line items, payments, refunds, and processing input/output details are kept with their owning records so the app can round-trip those complete workflows. The app reads and writes these tables through transactional, revision-checked database functions.
 
 1. In the Supabase dashboard for this project, open **SQL Editor**, paste the complete `schema.sql`, and run it. This adds the `role` column to existing shop membership records.
+   If the database was already set up before the separate Pricing feature was added, run this one-time-compatible migration in **SQL Editor** to permit products whose selling price has not been set yet:
+   ```sql
+   alter table public.butcher_products
+     alter column price set default 0;
+
+   alter table public.butcher_products
+     drop constraint if exists butcher_products_price_check;
+
+   alter table public.butcher_products
+     add constraint butcher_products_price_check check (price >= 0);
+   ```
+   This only changes the allowed minimum product price; it does not change existing product prices or delivery purchase costs.
 2. In **SQL Editor**, authorize your existing Supabase Auth account as the shop administrator. Replace the email with your account’s email:
    ```sql
    insert into public.butcher_shop_members (user_id, role)

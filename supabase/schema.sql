@@ -37,9 +37,18 @@ create table if not exists public.butcher_products (
   sort_order integer not null,
   name text not null,
   category text not null,
-  price numeric(12, 2) not null check (price > 0),
+  price numeric(12, 2) not null default 0 check (price >= 0),
   record jsonb not null check (jsonb_typeof(record) = 'object')
 );
+
+alter table public.butcher_products
+  alter column price set default 0;
+
+alter table public.butcher_products
+  drop constraint if exists butcher_products_price_check;
+
+alter table public.butcher_products
+  add constraint butcher_products_price_check check (price >= 0);
 
 create index if not exists butcher_products_category_order_idx
   on public.butcher_products (category, sort_order);

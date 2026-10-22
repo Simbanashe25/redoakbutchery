@@ -24,6 +24,7 @@ const initialCompanyDetails = {
   logoDataUrl: '',
 }
 const categoryName = (category) => category.replace(/^\d+\s+/, '')
+const hasSellingPrice = (product) => Number.isFinite(Number(product.price)) && Number(product.price) > 0
 const categoryClassName = (category) => {
   const name = categoryName(category).toLowerCase().replace(/\s+/g, '-')
   return ['fish', 'seafood', 'poultry', 'pork', 'beef', 'lamb'].includes(name) ? name : 'custom'
@@ -89,6 +90,16 @@ function normalizeShopState(value) {
   }))
   return normalized
 }
+
+function latestReceiptUnitCost(product, receipts) {
+  const latestReceipt = receipts.find((receipt) => (
+    receipt.productId === product.id || (receipt.productId == null && receipt.product === product.name)
+  ))
+  if (!latestReceipt || latestReceipt.unitCost == null || latestReceipt.unitCost === '') return ''
+  const unitCost = Number(latestReceipt.unitCost)
+  return Number.isFinite(unitCost) && unitCost >= 0 ? unitCost.toFixed(2) : ''
+}
+
 const localDateKey = (timestamp) => {
   const date = new Date(timestamp)
   const year = date.getFullYear()
@@ -214,12 +225,14 @@ function App() {
   const [customerAdminNotice, setCustomerAdminNotice] = useState('')
   const [stock, setStock] = useState({})
   const [inventoryMovements, setInventoryMovements] = useState([])
-  const [newProduct, setNewProduct] = useState({ name: '', category: '', price: '', initialStock: '', imageDataUrl: '' })
+  const [newProduct, setNewProduct] = useState({ name: '', category: '', initialStock: '', imageDataUrl: '' })
   const [productFormError, setProductFormError] = useState('')
   const [productToDelete, setProductToDelete] = useState(null)
   const [editingProductId, setEditingProductId] = useState(null)
   const [productEditDraft, setProductEditDraft] = useState(null)
   const [productEditError, setProductEditError] = useState('')
+  const [pricingDrafts, setPricingDrafts] = useState({})
+  const [pricingErrors, setPricingErrors] = useState({})
   const [newCategoryName, setNewCategoryName] = useState('')
   const [categoryFormError, setCategoryFormError] = useState('')
   const [categoryToDelete, setCategoryToDelete] = useState(null)
@@ -304,7 +317,7 @@ function App() {
     setProcessingOutputs((current) => current.map((line) => ({ ...line, productId: data.products.some((product) => product.id === line.productId) ? line.productId : firstProductId })))
     setReceipt((current) => {
       const product = data.products.find((item) => item.id === current.productId) ?? data.products[0]
-      return { ...current, productId: product?.id ?? 0, unitCost: product?.price.toFixed(2) ?? '' }
+      return { ...current, productId: product?.id ?? 0, unitCost: product ? latestReceiptUnitCost(product, data.stockReceipts) : '' }
     })
     const nextRevision = Number(revision) || 0
     revisionRef.current = nextRevision
@@ -596,7 +609,7 @@ function App() {
     }, 0) * 100) / 100
     : 0
   const visibleProducts = useMemo(() => {
-    const filtered = products.filter((product) => product.category === category)
+    const filtered = products.filter((product) => product.category === category && hasSellingPrice(product))
     return filtered.filter((product) => product.name.toLowerCase().includes(search.toLowerCase()))
   }, [category, products, search])
 
@@ -623,6 +636,11 @@ function App() {
   }
 
   function addProduct(product) {
+    if (!hasSellingPrice(product)) {
+      setNotice(`${product.name} is not available at the POS until a selling price is set in Advanced > Pricing.`)
+      window.setTimeout(() => setNotice(''), 3000)
+      return
+    }
     const existingIndex = cart.findIndex((item) => getCartProduct(item)?.id === product.id)
     const existing = existingIndex >= 0 ? cart[existingIndex] : null
     const currentWeight = cart.reduce((total, item) => total + (getCartProduct(item)?.id === product.id ? item.weight : 0), 0)
@@ -1131,7 +1149,7 @@ function App() {
     setReceipt((current) => ({
       ...current,
       productId: Number(productId),
-      unitCost: product ? product.price.toFixed(2) : current.unitCost,
+      unitCost: product ? latestReceiptUnitCost(product, stockReceipts) : '',
     }))
   }
 
@@ -1151,6 +1169,7 @@ function App() {
     setStockReceipts((current) => [{
       id: receiptId,
       createdAtMs: receiptId,
+      productId: product.id,
       product: product.name,
       quantity,
       unitCost,
@@ -1363,10 +1382,9 @@ function App() {
   function createProduct(event) {
     event.preventDefault()
     const name = newProduct.name.trim()
-    const price = Number(newProduct.price)
     const initialStock = Number(newProduct.initialStock || 0)
-    if (!name || !categories.includes(newProduct.category) || !Number.isFinite(price) || price <= 0 || !Number.isFinite(initialStock) || initialStock < 0) {
-      setProductFormError('Enter a product name, choose a category, enter a price greater than zero, and provide a valid starting stock quantity.')
+    if (!name || !categories.includes(newProduct.category) || !Number.isFinite(initialStock) || initialStock < 0) {
+      setProductFormError('Enter a product name, choose a category, and provide a valid starting stock quantity.')
       return
     }
     if (products.some((product) => product.name.toLowerCase() === name.toLowerCase())) {
@@ -1378,7 +1396,7 @@ function App() {
       id: Math.max(0, ...products.map((item) => item.id)) + 1,
       name,
       category: newProduct.category,
-      price: Math.round(price * 100) / 100,
+      price: 0,
       imageDataUrl: newProduct.imageDataUrl,
       image: categoryImages[newProduct.category] ?? categoryImages['5 BEEF'],
     }
@@ -1396,12 +1414,12 @@ function App() {
         operator: currentUsername,
       }, ...current])
     }
-    setNewProduct({ name: '', category: categories[0] ?? '', price: '', initialStock: '', imageDataUrl: '' })
+    setNewProduct({ name: '', category: categories[0] ?? '', initialStock: '', imageDataUrl: '' })
     setProductFormError('')
     setCategory(product.category)
     setSearch('')
     setSearchOpen(false)
-    setNotice(`${product.name} added to products`)
+    setNotice(`${product.name} added. Set its selling price in Advanced > Pricing before selling.`)
     window.setTimeout(() => setNotice(''), 2400)
   }
 
@@ -1410,7 +1428,6 @@ function App() {
     setProductEditDraft({
       name: product.name,
       category: product.category,
-      price: String(product.price),
       imageDataUrl: product.imageDataUrl ?? '',
     })
     setProductEditError('')
@@ -1420,9 +1437,8 @@ function App() {
   function saveProductEdit(event, product) {
     event.preventDefault()
     const name = productEditDraft.name.trim()
-    const price = Number(productEditDraft.price)
-    if (!name || !Number.isFinite(price) || price <= 0) {
-      setProductEditError('Enter a product name and a price greater than zero.')
+    if (!name) {
+      setProductEditError('Enter a product name.')
       return
     }
     if (products.some((item) => item.id !== product.id && item.name.toLowerCase() === name.toLowerCase())) {
@@ -1432,7 +1448,7 @@ function App() {
 
     const previousName = product.name
     setProducts((current) => current.map((item) => item.id === product.id
-      ? { ...item, name, category: productEditDraft.category, price: Math.round(price * 100) / 100, imageDataUrl: productEditDraft.imageDataUrl }
+      ? { ...item, name, category: productEditDraft.category, imageDataUrl: productEditDraft.imageDataUrl }
       : item))
     if (name !== previousName) {
       setCart((current) => current.map((item) => item.id === product.id || item.name === previousName
@@ -1449,6 +1465,21 @@ function App() {
     setProductEditDraft(null)
     setProductEditError('')
     setNotice(`${name} updated`)
+    window.setTimeout(() => setNotice(''), 2400)
+  }
+
+  function saveSellingPrice(event, product) {
+    event.preventDefault()
+    const price = Number(pricingDrafts[product.id] ?? product.price)
+    if (!Number.isFinite(price) || price <= 0) {
+      setPricingErrors((current) => ({ ...current, [product.id]: 'Enter a selling price greater than zero.' }))
+      return
+    }
+    const roundedPrice = Math.round(price * 100) / 100
+    setProducts((current) => current.map((item) => item.id === product.id ? { ...item, price: roundedPrice } : item))
+    setPricingDrafts((current) => ({ ...current, [product.id]: String(roundedPrice) }))
+    setPricingErrors((current) => ({ ...current, [product.id]: '' }))
+    setNotice(`${product.name} selling price updated to ${currency(roundedPrice)}/kg`)
     window.setTimeout(() => setNotice(''), 2400)
   }
 
@@ -1612,7 +1643,7 @@ function App() {
       setReceipt((current) => ({
         ...current,
         productId: remainingProducts[0].id,
-        unitCost: remainingProducts[0].price.toFixed(2),
+        unitCost: latestReceiptUnitCost(remainingProducts[0], stockReceipts),
       }))
     }
     if (Number(stocktake.productId) === product.id) {
@@ -2429,7 +2460,11 @@ function App() {
                 </button>
               )) : (
                 <div className="col-span-4 flex items-center justify-center bg-[#eee] px-4 text-center text-sm text-[#777]">
-                  {products.length ? 'No matching stock items' : 'No products yet. Create a category and products in Advanced tools to start selling.'}
+                  {products.length
+                    ? products.some((product) => product.category === category && hasSellingPrice(product))
+                      ? 'No matching stock items'
+                      : 'No products in this category have a selling price yet. Set prices in Advanced > Pricing to make them available here.'
+                    : 'No products yet. Create a category and products in Advanced tools to start selling.'}
                 </div>
               )}
             </div>
@@ -2929,7 +2964,7 @@ function App() {
             </header>
             <div className="admin-content grid min-h-0 flex-1">
               <nav aria-label="Admin sections" className="admin-nav flex gap-2 overflow-x-auto border-b border-[#bbb] bg-[#e9e9e6] p-2 sm:flex-col sm:overflow-y-auto sm:border-b-0 sm:border-r sm:p-3">
-                {['Overview', 'Products', 'Categories', 'Customers', 'Payment methods', 'Users', 'Activity log', 'Company details', 'Receive stock', 'Processing', 'Stock on hand', 'Adjust & waste', 'Stocktake', 'Reports'].map((item) => (
+                {['Overview', 'Products', 'Pricing', 'Categories', 'Customers', 'Payment methods', 'Users', 'Activity log', 'Company details', 'Receive stock', 'Processing', 'Stock on hand', 'Adjust & waste', 'Stocktake', 'Reports'].map((item) => (
                   <button
                     className={`admin-nav-button shrink-0 border px-3 py-3 text-left text-sm font-bold ${advancedView === item ? 'border-[#337d35] bg-[#86d943]' : 'border-[#bbb] bg-white hover:bg-[#f4f4f2]'}`}
                     key={item}
@@ -2955,6 +2990,7 @@ function App() {
                     </div>
                     <div className="mt-6 flex flex-wrap gap-3">
                       <button className="touch-button green min-h-12 px-5 text-sm font-bold" onClick={() => setAdvancedView('Products')} type="button">＋ Manage products</button>
+                      <button className="touch-button yellow min-h-12 px-5 text-sm font-bold" onClick={() => setAdvancedView('Pricing')} type="button">＋ Manage selling prices</button>
                       <button className="touch-button blue min-h-12 px-5 text-sm font-bold" onClick={() => setAdvancedView('Categories')} type="button">＋ Manage categories</button>
                       <button className="touch-button green min-h-12 px-5 text-sm font-bold" onClick={() => setAdvancedView('Receive stock')} type="button">＋ Receive a delivery</button>
                       <button className="touch-button yellow min-h-12 px-5 text-sm font-bold" onClick={() => setAdvancedView('Processing')} type="button">＋ Process stock</button>
@@ -2979,8 +3015,9 @@ function App() {
                 {advancedView === 'Products' && (
                   <div>
                     <h3 className="mb-1 text-xl font-bold">Product catalogue</h3>
-                    <p className="mb-5 text-sm text-[#666]">Create products for the POS and manage items currently in the catalogue.</p>
+                    <p className="mb-5 text-sm text-[#666]">Create products and manage their names, categories, and images. Set selling prices separately in Pricing; products are hidden from the POS until priced.</p>
                     {!categories.length && <button className="touch-button blue mb-4 min-h-10 px-4 text-sm font-bold" onClick={() => setAdvancedView('Categories')} type="button">Create a category first</button>}
+                    <button className="touch-button yellow mb-4 min-h-10 px-4 text-sm font-bold" onClick={() => setAdvancedView('Pricing')} type="button">Manage selling prices</button>
                     <form className="mb-6 grid gap-3 border border-[#bbb] bg-white p-4 sm:grid-cols-2 lg:grid-cols-4" onSubmit={createProduct}>
                       <label className="admin-field sm:col-span-2">Product name
                         <input autoComplete="off" className="admin-input" maxLength="60" onChange={(event) => { setNewProduct((current) => ({ ...current, name: event.target.value })); setProductFormError('') }} placeholder="e.g. Pork Sausage" required value={newProduct.name} />
@@ -2990,9 +3027,6 @@ function App() {
                           <option disabled value="">Select a category</option>
                           {categories.map((item) => <option key={item} value={item}>{categoryName(item)}</option>)}
                         </select>
-                      </label>
-                      <label className="admin-field">Price per kg
-                        <input className="admin-input" min="0.01" onChange={(event) => { setNewProduct((current) => ({ ...current, price: event.target.value })); setProductFormError('') }} placeholder="e.g. 14.99" required step="0.01" type="number" value={newProduct.price} />
                       </label>
                       <label className="admin-field">Starting stock (kg)
                         <input className="admin-input" min="0" onChange={(event) => { setNewProduct((current) => ({ ...current, initialStock: event.target.value })); setProductFormError('') }} placeholder="Optional, defaults to 0" step="0.001" type="number" value={newProduct.initialStock} />
@@ -3022,7 +3056,7 @@ function App() {
 
                     <div className="overflow-x-auto border border-[#bbb] bg-white">
                       <table className="admin-table w-full text-left text-sm">
-                        <thead className="bg-[#e9e9e6]"><tr><th>Product</th><th>Category</th><th className="text-right">Price / kg</th><th className="text-right">On hand</th><th className="text-right">Action</th></tr></thead>
+                        <thead className="bg-[#e9e9e6]"><tr><th>Product</th><th>Category</th><th className="text-right">On hand</th><th className="text-right">Action</th></tr></thead>
                         <tbody>{products.slice(getListPage('product-catalogue', products.length).start, getListPage('product-catalogue', products.length).end).map((product) => {
                           const protectedByCurrentSale = cart.some((item) => item.id === product.id || item.name === product.name)
                           const protectedByHeldSale = heldOrders.some((order) => order.items.some((item) => item.id === product.id || item.name === product.name))
@@ -3032,7 +3066,7 @@ function App() {
                           if (editingProductId === product.id && productEditDraft) {
                             return (
                               <tr className="border-t border-[#bbb] bg-[#f7f8f3]" key={product.id}>
-                                <td className="p-3" colSpan="5">
+                                <td className="p-3" colSpan="4">
                                   <form className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" onSubmit={(event) => saveProductEdit(event, product)}>
                                     <label className="admin-field sm:col-span-2">Product name
                                       <input autoFocus className="admin-input" maxLength="60" onChange={(event) => { setProductEditDraft((current) => ({ ...current, name: event.target.value })); setProductEditError('') }} required value={productEditDraft.name} />
@@ -3041,9 +3075,6 @@ function App() {
                                       <select className="admin-input" onChange={(event) => setProductEditDraft((current) => ({ ...current, category: event.target.value }))} value={productEditDraft.category}>
                                         {categories.map((item) => <option key={item} value={item}>{categoryName(item)}</option>)}
                                       </select>
-                                    </label>
-                                    <label className="admin-field">Price per kg
-                                      <input className="admin-input" min="0.01" onChange={(event) => { setProductEditDraft((current) => ({ ...current, price: event.target.value })); setProductEditError('') }} required step="0.01" type="number" value={productEditDraft.price} />
                                     </label>
                                     <label className="admin-field sm:col-span-2">Replace product image (optional)
                                       <input accept="image/*" aria-label={`Replace ${product.name} image`} className="admin-input h-auto min-h-11" onChange={(event) => selectProductEditImage(event.target.files?.[0])} type="file" />
@@ -3066,7 +3097,6 @@ function App() {
                             <tr className="border-t border-[#ddd]" key={product.id}>
                               <td className="font-semibold">{product.name}</td>
                               <td>{categoryName(product.category)}</td>
-                              <td className="text-right">{currency(product.price)}</td>
                               <td className="text-right">{(stock[product.id] ?? 0).toFixed(3)} kg</td>
                               <td className="text-right">
                                 {productToDelete === product.id ? (
@@ -3096,7 +3126,53 @@ function App() {
                       </table>
                     </div>
                     {renderPagination('product-catalogue', products.length, 'products')}
-                    <p className="mt-2 text-xs text-[#666]">Products used in active, held, or completed sales cannot be deleted. At least one catalogue product must remain. Deleting an unused product also removes its stock count.</p>
+                    <p className="mt-2 text-xs text-[#666]">Products used in active, held, or completed sales cannot be deleted. At least one catalogue product must remain. Deleting an unused product also removes its stock count. Manage all POS selling prices separately in Pricing.</p>
+                  </div>
+                )}
+
+                {advancedView === 'Pricing' && (
+                  <div>
+                    <h3 className="mb-1 text-xl font-bold">Selling prices</h3>
+                    <p className="mb-5 text-sm text-[#666]">Set the selling price per kilogram separately from product details and delivery purchase costs. Products without a selling price stay hidden from the POS. Price changes apply to items added after saving; items already in an open sale keep their current price.</p>
+                    <div className="mb-4 grid grid-cols-2 gap-3">
+                      <div className="border border-[#bbb] bg-white p-4"><span className="text-sm text-[#666]">Priced products</span><strong className="mt-1 block text-2xl">{products.filter(hasSellingPrice).length}</strong></div>
+                      <div className="border border-[#bbb] bg-white p-4"><span className="text-sm text-[#666]">Need a price</span><strong className="mt-1 block text-2xl">{products.filter((product) => !hasSellingPrice(product)).length}</strong></div>
+                    </div>
+                    <div className="overflow-x-auto border border-[#bbb] bg-white">
+                      <table className="admin-table w-full text-left text-sm">
+                        <thead className="bg-[#e9e9e6]"><tr><th>Product</th><th>Category</th><th>Status</th><th>Selling price / kg</th><th className="text-right">Action</th></tr></thead>
+                        <tbody>{products.length ? products.slice(getListPage('selling-prices', products.length).start, getListPage('selling-prices', products.length).end).map((product) => (
+                          <tr className="border-t border-[#ddd]" key={product.id}>
+                            <td className="font-semibold">{product.name}</td>
+                            <td>{categoryName(product.category)}</td>
+                            <td><span className={`inline-block px-2 py-1 text-xs font-bold ${hasSellingPrice(product) ? 'bg-[#dff3d0] text-[#315e25]' : 'bg-[#fff0d6] text-[#805300]'}`}>{hasSellingPrice(product) ? 'Available at POS' : 'Hidden until priced'}</span></td>
+                            <td>
+                              <form id={`selling-price-${product.id}`} className="admin-field" onSubmit={(event) => saveSellingPrice(event, product)}>
+                                <label className="sr-only" htmlFor={`selling-price-input-${product.id}`}>{product.name} selling price per kg</label>
+                                <input
+                                  id={`selling-price-input-${product.id}`}
+                                  className="admin-input min-w-32"
+                                  min="0.01"
+                                  onChange={(event) => {
+                                    setPricingDrafts((current) => ({ ...current, [product.id]: event.target.value }))
+                                    setPricingErrors((current) => ({ ...current, [product.id]: '' }))
+                                  }}
+                                  placeholder="Enter price"
+                                  step="0.01"
+                                  type="number"
+                                  value={pricingDrafts[product.id] ?? (hasSellingPrice(product) ? product.price.toFixed(2) : '')}
+                                />
+                                {pricingErrors[product.id] && <span aria-live="assertive" className="text-xs font-semibold text-[#a51f1f]">{pricingErrors[product.id]}</span>}
+                              </form>
+                            </td>
+                            <td className="text-right">
+                              <button className="touch-button green min-h-10 px-4 text-sm font-bold" form={`selling-price-${product.id}`} type="submit">Save price</button>
+                            </td>
+                          </tr>
+                        )) : <tr className="border-t border-[#ddd]"><td className="p-4 text-center text-[#666]" colSpan="5">No products yet. Create products in the Products section first.</td></tr>}</tbody>
+                      </table>
+                    </div>
+                    {renderPagination('selling-prices', products.length, 'products')}
                   </div>
                 )}
 
@@ -3360,7 +3436,7 @@ function App() {
                 {advancedView === 'Receive stock' && (
                   <div className="max-w-[760px]">
                     <h3 className="mb-1 text-xl font-bold">Receive stock</h3>
-                    <p className="mb-5 text-sm text-[#666]">Record an incoming delivery. The received quantity is added to stock on hand.</p>
+                    <p className="mb-5 text-sm text-[#666]">Record an incoming delivery. The received quantity is added to stock on hand. Purchase cost can vary by delivery and does not change the POS selling price.</p>
                     <form className="grid gap-4 border border-[#bbb] bg-white p-4 sm:grid-cols-2 sm:p-5" onSubmit={receiveStock}>
                       <label className="admin-field sm:col-span-2">Product
                         <select className="admin-input" onChange={(event) => selectReceiptProduct(event.target.value)} value={receipt.productId}>
@@ -3370,9 +3446,10 @@ function App() {
                       <label className="admin-field">Quantity received (kg)
                         <input className="admin-input" min="0.001" onChange={(event) => setReceipt((current) => ({ ...current, quantity: event.target.value }))} placeholder="e.g. 12.500" required step="0.001" type="number" value={receipt.quantity} />
                       </label>
-                      <label className="admin-field">Unit cost ($/kg)
+                      <label className="admin-field">Purchase cost per kg (this delivery)
                         <input className="admin-input" min="0" onChange={(event) => setReceipt((current) => ({ ...current, unitCost: event.target.value }))} required step="0.01" type="number" value={receipt.unitCost} />
                       </label>
+                      <p className="text-xs text-[#666] sm:col-span-2">Defaults to the most recent delivery cost for this product. Change it to match this supplier's invoice.</p>
                       <label className="admin-field">Supplier
                         <input className="admin-input" onChange={(event) => setReceipt((current) => ({ ...current, supplier: event.target.value }))} placeholder="Supplier name" value={receipt.supplier} />
                       </label>
@@ -3404,7 +3481,7 @@ function App() {
                             <div className="grid gap-2 border border-[#ddd] bg-[#f8f8f6] p-3 sm:grid-cols-[minmax(0,1fr)_160px_auto]" key={`processing-input-${index}`}>
                               <label className="admin-field">Input product
                                 <select className="admin-input" onChange={(event) => { setProcessingInputs((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, productId: Number(event.target.value) } : entry)); setProcessingError('') }} value={line.productId}>
-                                  {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {currency(product.price)}/kg · {Number(stock[product.id] ?? 0).toFixed(3)} kg available</option>)}
+                                  {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {hasSellingPrice(product) ? `${currency(product.price)}/kg` : 'not priced'} · {Number(stock[product.id] ?? 0).toFixed(3)} kg available</option>)}
                                 </select>
                               </label>
                               <label className="admin-field">Quantity used (kg)
@@ -3427,9 +3504,13 @@ function App() {
                               <div className="grid gap-2 border border-[#ddd] bg-[#f8f8f6] p-3 sm:grid-cols-[minmax(0,1fr)_160px_auto]" key={`processing-output-${index}`}>
                                 <label className="admin-field">Output product
                                   <select className="admin-input" onChange={(event) => { setProcessingOutputs((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, productId: Number(event.target.value) } : entry)); setProcessingError('') }} value={line.productId}>
-                                    {products.map((product) => <option key={product.id} value={product.id}>{product.name} · selling at {currency(product.price)}/kg</option>)}
+                                    {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {hasSellingPrice(product) ? `selling at ${currency(product.price)}/kg` : 'no selling price'}</option>)}
                                   </select>
-                                  <span className="text-xs text-[#666]">Retail pricing is managed in Products: {currency(outputProduct?.price ?? 0)}/kg</span>
+                                  <span className="text-xs text-[#666]">
+                                    {outputProduct && hasSellingPrice(outputProduct)
+                                      ? `Selling price is managed in Pricing: ${currency(outputProduct.price)}/kg`
+                                      : 'Set a selling price in Pricing before this product can be sold at the POS.'}
+                                  </span>
                                 </label>
                                 <label className="admin-field">Produced quantity (kg)
                                   <input className="admin-input" min="0.001" onChange={(event) => { setProcessingOutputs((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, quantity: event.target.value } : entry)); setProcessingError('') }} placeholder="e.g. 6.250" step="0.001" type="number" value={line.quantity} />
@@ -3479,10 +3560,10 @@ function App() {
                     <p className="mb-4 text-sm text-[#666]">Current inventory balance by product.</p>
                     <div className="overflow-x-auto border border-[#bbb] bg-white">
                       <table className="admin-table w-full text-left text-sm">
-                        <thead className="bg-[#e9e9e6]"><tr><th>Product</th><th>Category</th><th className="text-right">Retail price</th><th className="text-right">On hand</th><th>Status</th></tr></thead>
+                        <thead className="bg-[#e9e9e6]"><tr><th>Product</th><th>Category</th><th className="text-right">Selling price</th><th className="text-right">On hand</th><th>Status</th></tr></thead>
                         <tbody>{products.slice(getListPage('stock-on-hand', products.length).start, getListPage('stock-on-hand', products.length).end).map((product) => (
                           <tr className="border-t border-[#ddd]" key={product.id}>
-                            <td className="font-semibold">{product.name}</td><td>{product.category.slice(2)}</td><td className="text-right">{currency(product.price)}/kg</td>
+                            <td className="font-semibold">{product.name}</td><td>{categoryName(product.category)}</td><td className="text-right">{hasSellingPrice(product) ? `${currency(product.price)}/kg` : 'Not set'}</td>
                             <td className="text-right font-bold">{(stock[product.id] ?? 0).toFixed(3)} kg</td><td><span className={`inline-block px-2 py-1 text-xs font-bold ${(stock[product.id] ?? 0) > 0 ? 'bg-[#dff3d0] text-[#315e25]' : 'bg-[#f5e3df] text-[#8e3428]'}`}>{(stock[product.id] ?? 0) > 0 ? 'In stock' : 'Out of stock'}</span></td>
                           </tr>
                         ))}</tbody>

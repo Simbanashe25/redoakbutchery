@@ -2282,7 +2282,7 @@ function App() {
           </div>
           <form className="space-y-4" onSubmit={signIn}>
             <label className="admin-field text-[#f1eee8]">Staff email
-              <input autoComplete="username" autoFocus className="admin-input" disabled={!authReady || !supabase} onChange={(event) => { setLoginUsername(event.target.value); setLoginError('') }} placeholder="Enter your Supabase Auth email" required type="email" value={loginUsername} />
+              <input autoComplete="username" autoFocus className="admin-input" disabled={!authReady || !supabase} onChange={(event) => { setLoginUsername(event.target.value); setLoginError('') }} placeholder="Enter your email address" required type="email" value={loginUsername} />
             </label>
             <label className="admin-field text-[#f1eee8]">Password
               <input autoComplete="current-password" className="admin-input" disabled={!authReady || !supabase} onChange={(event) => { setLoginPassword(event.target.value); setLoginError('') }} placeholder="Enter your password" required type="password" value={loginPassword} />

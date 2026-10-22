@@ -742,6 +742,19 @@ button {
 
 }
 
+@media (min-width: 900px) and (max-width: 1199px) and (min-height: 600px) and (orientation: landscape) {
+  .payment-modal {
+    max-height: calc(100dvh - 48px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .admin-menu {
+    max-width: calc(100vw - 48px);
+    max-height: calc(100dvh - 48px);
+  }
+}
+
 @media (max-height: 500px) {
   main {
     min-height: 100dvh;

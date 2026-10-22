@@ -45,6 +45,10 @@ const actions = [
 ]
 
 const currency = (amount) => `$${amount.toFixed(2)}`
+const cartItemAmount = (item) => item.lineAmount ?? item.weight * item.price
+const saleItemUnitPrice = (item) => item.lineAmount == null || item.quantity <= 0
+  ? item.price
+  : item.lineAmount / item.quantity
 const ADVANCED_PIN = '1234'
 const emptyShopState = {
   products: [],
@@ -221,6 +225,7 @@ function App() {
   const [page, setPage] = useState(0)
   const [listPages, setListPages] = useState({})
   const [cartWeightDrafts, setCartWeightDrafts] = useState({})
+  const [cartAmountDrafts, setCartAmountDrafts] = useState({})
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [advancedPinOpen, setAdvancedPinOpen] = useState(false)
   const [advancedPin, setAdvancedPin] = useState('')
@@ -398,6 +403,7 @@ function App() {
       setSyncStatus('idle')
       setCart([])
       setCartWeightDrafts({})
+      setCartAmountDrafts({})
     })
 
     async function restoreSession() {
@@ -646,7 +652,7 @@ function App() {
   }
 
   const subtotal = useMemo(
-    () => cart.reduce((total, item) => total + item.weight * item.price, 0),
+    () => cart.reduce((total, item) => total + cartItemAmount(item), 0),
     [cart],
   )
   const discountAmount = Math.min(
@@ -693,7 +699,7 @@ function App() {
     ? Math.round(selectedRefundSale.items.reduce((total, item) => {
       const quantity = Number(refundQuantities[item.id]) || 0
       const saleTotalRatio = selectedRefundSale.subtotal > 0 ? selectedRefundSale.total / selectedRefundSale.subtotal : 0
-      return total + quantity * item.price * saleTotalRatio
+      return total + quantity * saleItemUnitPrice(item) * saleTotalRatio
     }, 0) * 100) / 100
     : 0
   const visibleProducts = useMemo(() => {
@@ -712,6 +718,10 @@ function App() {
       const weightDraft = cartWeightDrafts[item.id]
       if (weightDraft !== undefined && (!/^\d+(?:\.\d{0,3})?$/.test(weightDraft) || Number(weightDraft) < 0.001 || Number(weightDraft) !== item.weight)) {
         return `Finish entering a valid weight for ${item.name}.`
+      }
+      const amountDraft = cartAmountDrafts[item.id]
+      if (amountDraft !== undefined && (!/^\d+(?:\.\d{0,2})?$/.test(amountDraft) || Number(amountDraft) < 0.01 || Number(amountDraft) !== item.lineAmount)) {
+        return `Finish entering a valid amount for ${item.name}.`
       }
       if (!Number.isFinite(item.weight) || item.weight <= 0) {
         return `Enter a weight greater than 0 kg for ${item.name}.`
@@ -751,14 +761,56 @@ function App() {
       return
     }
     setCart((current) => current.map((entry) => entry.id === itemId
-      ? { ...entry, weight: Number(weight.toFixed(3)) }
+      ? { ...entry, weight: Number(weight.toFixed(3)), lineAmount: undefined }
       : entry))
+    setCartAmountDrafts((current) => {
+      const next = { ...current }
+      delete next[itemId]
+      return next
+    })
   }
 
   function finishCartWeightEdit(itemId) {
     const item = cart.find((entry) => entry.id === itemId)
     if (!item) return
     setCartWeightDrafts((current) => ({ ...current, [itemId]: item.weight.toFixed(3) }))
+  }
+
+  function updateCartAmount(itemId, value) {
+    setCartAmountDrafts((current) => ({ ...current, [itemId]: value }))
+    if (value === '' || !/^\d+(?:\.\d{0,2})?$/.test(value)) return
+    const amount = Number(value)
+    if (!Number.isFinite(amount) || amount < 0.01) return
+
+    const item = cart.find((entry) => entry.id === itemId)
+    if (!item || !Number.isFinite(item.price) || item.price <= 0) return
+    const weight = Number((amount / item.price).toFixed(3))
+    const product = getCartProduct(item)
+    if (!product || weight < 0.001) {
+      setNotice(`Amount is too small to weigh for ${item.name}.`)
+      window.setTimeout(() => setNotice(''), 3000)
+      return
+    }
+    const otherWeight = cart.reduce((total, entry) => (
+      entry.id === itemId || getCartProduct(entry)?.id !== product.id ? total : total + entry.weight
+    ), 0)
+    const available = stock[product.id] ?? 0
+    if (otherWeight + weight > available + 1e-9) {
+      setCartAmountDrafts((current) => ({ ...current, [itemId]: currency(cartItemAmount(item)).slice(1) }))
+      setNotice(`Insufficient stock for ${product.name}: ${Math.max(0, available - otherWeight).toFixed(3)} kg available.`)
+      window.setTimeout(() => setNotice(''), 3000)
+      return
+    }
+    setCart((current) => current.map((entry) => entry.id === itemId
+      ? { ...entry, weight, lineAmount: Math.round(amount * 100) / 100 }
+      : entry))
+    setCartWeightDrafts((current) => ({ ...current, [itemId]: weight.toFixed(3) }))
+  }
+
+  function finishCartAmountEdit(itemId) {
+    const item = cart.find((entry) => entry.id === itemId)
+    if (!item) return
+    setCartAmountDrafts((current) => ({ ...current, [itemId]: cartItemAmount(item).toFixed(2) }))
   }
 
   function addProduct(product) {
@@ -779,9 +831,14 @@ function App() {
     }
     const addedWeight = Number((existing ? existing.weight + Math.min(1, remainingWeight) : Math.min(1, remainingWeight)).toFixed(3))
     setCart(existing
-      ? cart.map((item, index) => index === existingIndex ? { ...item, weight: addedWeight } : item)
+      ? cart.map((item, index) => index === existingIndex ? { ...item, weight: addedWeight, lineAmount: undefined } : item)
       : [...cart, { id: product.id, name: product.name, weight: 1, price: product.price }])
     setCartWeightDrafts((current) => ({ ...current, [product.id]: addedWeight.toFixed(3) }))
+    setCartAmountDrafts((current) => {
+      const next = { ...current }
+      delete next[product.id]
+      return next
+    })
     setNotice(`${product.name} added`)
     window.setTimeout(() => setNotice(''), 1800)
   }
@@ -795,6 +852,7 @@ function App() {
       }
       setCart([])
       setCartWeightDrafts({})
+      setCartAmountDrafts({})
       setDiscount({ type: 'percent', value: 0 })
       setSelectedCustomerId(null)
       setPaidAmount(0)
@@ -811,6 +869,11 @@ function App() {
         const removedItemId = cart[cart.length - 1].id
         setCart((current) => current.slice(0, -1))
         setCartWeightDrafts((current) => {
+          const next = { ...current }
+          delete next[removedItemId]
+          return next
+        })
+        setCartAmountDrafts((current) => {
           const next = { ...current }
           delete next[removedItemId]
           return next
@@ -982,6 +1045,7 @@ function App() {
     setHeldOrders((current) => [heldOrder, ...current])
     setCart([])
     setCartWeightDrafts({})
+    setCartAmountDrafts({})
     setDiscount({ type: 'percent', value: 0 })
     setSelectedCustomerId(null)
     setPaidAmount(0)
@@ -1003,6 +1067,7 @@ function App() {
 
     setCart(order.items.map((item) => ({ ...item })))
     setCartWeightDrafts({})
+    setCartAmountDrafts({})
     setDiscount({ ...order.discount })
     setSelectedCustomerId(order.customerId)
     setPaidAmount(order.paidAmount ?? 0)
@@ -1238,7 +1303,7 @@ function App() {
       id: Date.now(),
       createdAtMs: Date.now(),
       amount: refundTotal,
-      taxAmount: Math.round((refundItems.reduce((total, item) => total + item.quantity * item.price * (1 - (selectedRefundSale.discountRate ?? 0)), 0)
+      taxAmount: Math.round((refundItems.reduce((total, item) => total + item.quantity * saleItemUnitPrice(item) * (1 - (selectedRefundSale.discountRate ?? 0)), 0)
         * (selectedRefundSale.taxInclusive
           ? (selectedRefundSale.taxRate ?? 0) / (100 + (selectedRefundSale.taxRate ?? 0))
           : (selectedRefundSale.taxRate ?? 0) / 100)) * 100) / 100,
@@ -1905,6 +1970,7 @@ function App() {
           quantity: item.weight,
           refundedQuantity: 0,
           price: item.price,
+          lineAmount: cartItemAmount(item),
         })),
         refunds: [],
       }
@@ -1938,6 +2004,7 @@ function App() {
     setNotice(`Payment complete · ${method}${changeDue ? ` · Change ${currency(changeDue)}` : ''}`)
     setCart([])
     setCartWeightDrafts({})
+    setCartAmountDrafts({})
     setDiscount({ type: 'percent', value: 0 })
     setSelectedCustomerId(null)
     setPaidAmount(0)
@@ -2143,9 +2210,9 @@ function App() {
           refundAmount: 0,
         }
         product.quantity += item.quantity
-        product.gross += item.quantity * item.price
+        product.gross += item.lineAmount ?? item.quantity * item.price
         const saleTotalRatio = sale.subtotal > 0 ? sale.total / sale.subtotal : 0
-        product.netBeforeRefunds += item.quantity * item.price * saleTotalRatio
+        product.netBeforeRefunds += (item.lineAmount ?? item.quantity * item.price) * saleTotalRatio
         report.products[item.productId] = product
       })
     })
@@ -2167,7 +2234,7 @@ function App() {
         }
         product.refundQuantity += returnedItem.quantity
         const saleTotalRatio = sale?.subtotal > 0 ? sale.total / sale.subtotal : 0
-        product.refundAmount += returnedItem.quantity * (saleItem?.price ?? 0) * saleTotalRatio
+        product.refundAmount += returnedItem.quantity * (saleItem ? saleItemUnitPrice(saleItem) : 0) * saleTotalRatio
         report.products[productId] = product
       })
     })
@@ -2319,8 +2386,8 @@ function App() {
         const key = item.productId ?? item.name
         const entry = summary.get(key) ?? { key, name: item.name, quantity: 0, grossSales: 0, netSales: 0, refundedQuantity: 0, refundAmount: 0 }
         entry.quantity += item.quantity
-        entry.grossSales += item.quantity * item.price
-        entry.netSales += item.quantity * item.price * (sale.subtotal > 0 ? sale.total / sale.subtotal : 0)
+        entry.grossSales += item.lineAmount ?? item.quantity * item.price
+        entry.netSales += (item.lineAmount ?? item.quantity * item.price) * (sale.subtotal > 0 ? sale.total / sale.subtotal : 0)
         summary.set(key, entry)
       })
     })
@@ -2331,7 +2398,7 @@ function App() {
         const key = saleItem?.productId ?? item.name
         const entry = summary.get(key) ?? { key, name: item.name, quantity: 0, grossSales: 0, netSales: 0, refundedQuantity: 0, refundAmount: 0 }
         entry.refundedQuantity += item.quantity
-        entry.refundAmount += item.quantity * (saleItem?.price ?? 0) * (sale?.subtotal > 0 ? sale.total / sale.subtotal : 0)
+        entry.refundAmount += item.quantity * (saleItem ? saleItemUnitPrice(saleItem) : 0) * (sale?.subtotal > 0 ? sale.total / sale.subtotal : 0)
         summary.set(key, entry)
       })
     })
@@ -2620,7 +2687,7 @@ function App() {
           <section className="left-panel grid min-h-0 gap-[3px]">
             <div className="receipt-wrap min-h-[250px] overflow-hidden border border-[#b1b1b1] bg-white">
               <div className="receipt-head grid grid-cols-[34px_minmax(0,1fr)_82px_69px_76px] border-b border-[#c9c9c9] bg-[#ededed] text-[11px] font-semibold">
-                <span>No</span><span>Description</span><span className="text-center">Weight (kg)</span><span className="text-right">Price</span><span className="pr-1 text-right">Amount</span>
+                <span>No</span><span>Description</span><span className="text-center">Weight (kg)</span><span className="text-right">Price/kg</span><span className="pr-1 text-right">Amount ($)</span>
               </div>
               <div className="receipt-lines">
                 {cart.length === 0 ? (
@@ -2644,7 +2711,17 @@ function App() {
                       value={cartWeightDrafts[item.id] ?? item.weight.toFixed(3)}
                     />
                     <span className="text-right">{currency(item.price)}/kg</span>
-                    <span className="pr-1 text-right">{cartWeightDrafts[item.id] !== undefined && Number(cartWeightDrafts[item.id]) !== item.weight ? '—' : currency(item.weight * item.price)}</span>
+                    <input
+                      aria-label={`${item.name} sale amount`}
+                      className="h-7 w-full min-w-0 border border-[#aaa] bg-white px-1 text-right text-[12px] font-semibold tabular-nums focus:border-[#337d35] focus:outline-2 focus:outline-[#86d943]"
+                      min="0.01"
+                      onBlur={() => finishCartAmountEdit(item.id)}
+                      onChange={(event) => updateCartAmount(item.id, event.target.value)}
+                      step="0.01"
+                      title="Enter the amount the customer wants to spend on this meat."
+                      type="number"
+                      value={cartAmountDrafts[item.id] ?? cartItemAmount(item).toFixed(2)}
+                    />
                   </div>
                 ))}
               </div>
@@ -4387,7 +4464,7 @@ function App() {
                   {quotationPreview.items.map((item) => (
                     <div className="flex justify-between gap-2 py-1" key={item.id}>
                       <span>{item.name} · {item.weight.toFixed(3)} kg × {currency(item.price)}/kg</span>
-                      <strong className="shrink-0">{currency(item.weight * item.price)}</strong>
+                      <strong className="shrink-0">{currency(cartItemAmount(item))}</strong>
                     </div>
                   ))}
                 </div>
@@ -4426,7 +4503,7 @@ function App() {
                 <strong>{item.name}</strong>
                 <div className="thermal-row">
                   <span>{item.weight.toFixed(3)} kg × {currency(item.price)}/kg</span>
-                  <strong>{currency(item.weight * item.price)}</strong>
+                  <strong>{currency(cartItemAmount(item))}</strong>
                 </div>
               </div>
             ))}
@@ -4682,7 +4759,7 @@ function App() {
                 <strong>{item.name}</strong>
                 <div className="thermal-row">
                   <span>{item.quantity.toFixed(3)} kg × {currency(item.price)}/kg</span>
-                  <strong>{currency(item.quantity * item.price)}</strong>
+                  <strong>{currency(item.lineAmount ?? item.quantity * item.price)}</strong>
                 </div>
               </div>
             ))}

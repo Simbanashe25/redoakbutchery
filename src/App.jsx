@@ -18,6 +18,7 @@ const initialCompanyDetails = {
   taxId: '',
   taxName: 'GST',
   taxRate: '10',
+  taxEnabled: 'false',
   taxInclusive: 'true',
   website: '',
   receiptMessage: 'Thank you for your purchase!',
@@ -77,6 +78,9 @@ function normalizeShopState(value) {
           field,
           typeof saved[field] === 'string' ? saved[field] : initialCompanyDetails[field],
         ]))
+        if (typeof saved.taxEnabled !== 'string') {
+          normalized.companyDetails.taxEnabled = Number(saved.taxRate ?? initialCompanyDetails.taxRate) > 0 ? 'true' : 'false'
+        }
       }
     } else if (key === 'stock') {
       if (saved && typeof saved === 'object' && !Array.isArray(saved)) normalized.stock = saved
@@ -212,6 +216,7 @@ function App() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
   const [listPages, setListPages] = useState({})
+  const [cartWeightDrafts, setCartWeightDrafts] = useState({})
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [advancedPinOpen, setAdvancedPinOpen] = useState(false)
   const [advancedPin, setAdvancedPin] = useState('')
@@ -364,6 +369,7 @@ function App() {
       setShopReady(false)
       setSyncStatus('idle')
       setCart([])
+      setCartWeightDrafts({})
     })
 
     async function restoreSession() {
@@ -619,7 +625,8 @@ function App() {
     subtotal,
     Math.round((discount.type === 'percent' ? subtotal * discount.value / 100 : discount.value) * 100) / 100,
   )
-  const taxRate = Number(companyDetails.taxRate) || 0
+  const taxEnabled = companyDetails.taxEnabled === 'true'
+  const taxRate = taxEnabled ? Number(companyDetails.taxRate) || 0 : 0
   const taxInclusive = companyDetails.taxInclusive === 'true'
   const discountedSubtotal = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100)
   const taxAmount = Math.round((taxInclusive
@@ -670,6 +677,13 @@ function App() {
   function findCartStockShortage(items = cart) {
     const requiredByProduct = new Map()
     for (const item of items) {
+      const weightDraft = cartWeightDrafts[item.id]
+      if (weightDraft !== undefined && (!/^\d+(?:\.\d{0,3})?$/.test(weightDraft) || Number(weightDraft) < 0.001 || Number(weightDraft) !== item.weight)) {
+        return `Finish entering a valid weight for ${item.name}.`
+      }
+      if (!Number.isFinite(item.weight) || item.weight <= 0) {
+        return `Enter a weight greater than 0 kg for ${item.name}.`
+      }
       const product = getCartProduct(item)
       if (!product) return `Cannot verify stock for ${item.name}. Remove it and add the catalogue product again.`
       requiredByProduct.set(product.id, (requiredByProduct.get(product.id) ?? 0) + item.weight)
@@ -684,6 +698,37 @@ function App() {
     return ''
   }
 
+  function updateCartWeight(itemId, value) {
+    setCartWeightDrafts((current) => ({ ...current, [itemId]: value }))
+    if (value === '' || !/^\d+(?:\.\d{0,3})?$/.test(value)) return
+    const weight = Number(value)
+    if (!Number.isFinite(weight) || weight < 0.001) return
+
+    const item = cart.find((entry) => entry.id === itemId)
+    if (!item) return
+    const product = getCartProduct(item)
+    if (!product) return
+    const otherWeight = cart.reduce((total, entry) => (
+      entry.id === itemId || getCartProduct(entry)?.id !== product.id ? total : total + entry.weight
+    ), 0)
+    const available = stock[product.id] ?? 0
+    if (otherWeight + weight > available + 1e-9) {
+      setCartWeightDrafts((current) => ({ ...current, [itemId]: item.weight.toFixed(3) }))
+      setNotice(`Insufficient stock for ${product.name}: ${Math.max(0, available - otherWeight).toFixed(3)} kg available.`)
+      window.setTimeout(() => setNotice(''), 3000)
+      return
+    }
+    setCart((current) => current.map((entry) => entry.id === itemId
+      ? { ...entry, weight: Number(weight.toFixed(3)) }
+      : entry))
+  }
+
+  function finishCartWeightEdit(itemId) {
+    const item = cart.find((entry) => entry.id === itemId)
+    if (!item) return
+    setCartWeightDrafts((current) => ({ ...current, [itemId]: item.weight.toFixed(3) }))
+  }
+
   function addProduct(product) {
     if (!hasSellingPrice(product)) {
       setNotice(`${product.name} is not available at the POS until a selling price is set in Advanced > Pricing.`)
@@ -693,16 +738,18 @@ function App() {
     const existingIndex = cart.findIndex((item) => getCartProduct(item)?.id === product.id)
     const existing = existingIndex >= 0 ? cart[existingIndex] : null
     const currentWeight = cart.reduce((total, item) => total + (getCartProduct(item)?.id === product.id ? item.weight : 0), 0)
-    const nextWeight = Number((currentWeight + 1).toFixed(3))
     const available = stock[product.id] ?? 0
-    if (nextWeight > available + 1e-9) {
+    const remainingWeight = Number(Math.max(0, available - currentWeight).toFixed(3))
+    if (remainingWeight <= 0) {
       setNotice(`Insufficient stock for ${product.name}: ${available.toFixed(3)} kg available.`)
       window.setTimeout(() => setNotice(''), 3000)
       return
     }
+    const addedWeight = Number((existing ? existing.weight + Math.min(1, remainingWeight) : Math.min(1, remainingWeight)).toFixed(3))
     setCart(existing
-      ? cart.map((item, index) => index === existingIndex ? { ...item, weight: Number((item.weight + 1).toFixed(3)) } : item)
+      ? cart.map((item, index) => index === existingIndex ? { ...item, weight: addedWeight } : item)
       : [...cart, { id: product.id, name: product.name, weight: 1, price: product.price }])
+    setCartWeightDrafts((current) => ({ ...current, [product.id]: addedWeight.toFixed(3) }))
     setNotice(`${product.name} added`)
     window.setTimeout(() => setNotice(''), 1800)
   }
@@ -715,6 +762,7 @@ function App() {
           : customer))
       }
       setCart([])
+      setCartWeightDrafts({})
       setDiscount({ type: 'percent', value: 0 })
       setSelectedCustomerId(null)
       setPaidAmount(0)
@@ -728,7 +776,13 @@ function App() {
         setNotice('Remove the points redemption before removing sale items')
         window.setTimeout(() => setNotice(''), 2600)
       } else {
+        const removedItemId = cart[cart.length - 1].id
         setCart((current) => current.slice(0, -1))
+        setCartWeightDrafts((current) => {
+          const next = { ...current }
+          delete next[removedItemId]
+          return next
+        })
         setNotice('Last item removed')
       }
     } else if (label === 'Discount') {
@@ -808,6 +862,12 @@ function App() {
       window.setTimeout(() => setNotice(''), 2400)
       return
     }
+    const weightError = findCartStockShortage()
+    if (weightError) {
+      setNotice(weightError)
+      window.setTimeout(() => setNotice(''), 3000)
+      return
+    }
     if (paidAmount > 0) {
       setNotice('Quotations are unavailable after payment has started')
       window.setTimeout(() => setNotice(''), 2600)
@@ -879,10 +939,17 @@ function App() {
       setNotice('There is no sale to hold')
       return
     }
+    const weightError = findCartStockShortage()
+    if (weightError) {
+      setNotice(weightError)
+      window.setTimeout(() => setNotice(''), 3000)
+      return
+    }
 
     const heldOrder = createHeldOrder()
     setHeldOrders((current) => [heldOrder, ...current])
     setCart([])
+    setCartWeightDrafts({})
     setDiscount({ type: 'percent', value: 0 })
     setSelectedCustomerId(null)
     setPaidAmount(0)
@@ -903,6 +970,7 @@ function App() {
     }
 
     setCart(order.items.map((item) => ({ ...item })))
+    setCartWeightDrafts({})
     setDiscount({ ...order.discount })
     setSelectedCustomerId(order.customerId)
     setPaidAmount(order.paidAmount ?? 0)
@@ -1811,6 +1879,7 @@ function App() {
     }
     setNotice(`Payment complete · ${method}${changeDue ? ` · Change ${currency(changeDue)}` : ''}`)
     setCart([])
+    setCartWeightDrafts({})
     setDiscount({ type: 'percent', value: 0 })
     setSelectedCustomerId(null)
     setPaidAmount(0)
@@ -1914,12 +1983,13 @@ function App() {
       setCompanyError('Enter a tax rate from 0 to 100%.')
       return
     }
-    if (configuredRate > 0 && !companyDraft.taxName.trim()) {
+    if (companyDraft.taxEnabled === 'true' && configuredRate > 0 && !companyDraft.taxName.trim()) {
       setCompanyError('Enter a tax name when the tax rate is greater than 0%.')
       return
     }
     const taxSettingsChanged = companyDraft.taxName.trim() !== companyDetails.taxName
       || String(configuredRate) !== companyDetails.taxRate
+      || companyDraft.taxEnabled !== companyDetails.taxEnabled
       || companyDraft.taxInclusive !== companyDetails.taxInclusive
     if (taxSettingsChanged && (paidAmount > 0 || redeemedPoints > 0)) {
       setCompanyError('Complete or clear the current sale and its point redemption before changing tax settings.')
@@ -2184,6 +2254,31 @@ function App() {
     .filter((refund) => !closedDayRefundIds.includes(refund.id))
   const dayEndExpenses = expenses.filter((expense) => !closedDayExpenseIds.includes(expense.id))
   const dayEndHasActivity = dayEndSales.length > 0 || dayEndRefunds.length > 0 || dayEndExpenses.length > 0
+  const dayEndProducts = (() => {
+    const summary = new Map()
+    dayEndSales.forEach((sale) => {
+      sale.items.forEach((item) => {
+        const key = item.productId ?? item.name
+        const entry = summary.get(key) ?? { key, name: item.name, quantity: 0, grossSales: 0, netSales: 0, refundedQuantity: 0, refundAmount: 0 }
+        entry.quantity += item.quantity
+        entry.grossSales += item.quantity * item.price
+        entry.netSales += item.quantity * item.price * (sale.subtotal > 0 ? sale.total / sale.subtotal : 0)
+        summary.set(key, entry)
+      })
+    })
+    dayEndRefunds.forEach((refund) => {
+      const sale = sales.find((entry) => entry.refunds.some((saleRefund) => saleRefund.id === refund.id))
+      refund.items.forEach((item) => {
+        const saleItem = sale?.items.find((entry) => entry.id === item.id)
+        const key = saleItem?.productId ?? item.name
+        const entry = summary.get(key) ?? { key, name: item.name, quantity: 0, grossSales: 0, netSales: 0, refundedQuantity: 0, refundAmount: 0 }
+        entry.refundedQuantity += item.quantity
+        entry.refundAmount += item.quantity * (saleItem?.price ?? 0) * (sale?.subtotal > 0 ? sale.total / sale.subtotal : 0)
+        summary.set(key, entry)
+      })
+    })
+    return [...summary.values()].sort((first, second) => second.grossSales - first.grossSales || first.name.localeCompare(second.name))
+  })()
   const dayEndSummary = dayEndSales.reduce((summary, sale) => {
     summary.grossSales += sale.subtotal
     summary.discounts += sale.discount
@@ -2242,6 +2337,7 @@ function App() {
       refundTenders: { ...dayEndSummary.refundTenders },
       expenseTenders: { ...dayEndSummary.expenseTenders },
       expenseCategories: { ...dayEndSummary.expenseCategories },
+      productsSold: dayEndProducts.map((product) => ({ ...product })),
     }
     setDayEndReports((current) => [report, ...current])
     setClosedDaySaleIds((current) => [...current, ...dayEndSales.map((sale) => sale.id)])
@@ -2431,19 +2527,32 @@ function App() {
         <div className="pos-layout grid flex-1 gap-[3px] p-[3px]">
           <section className="left-panel grid min-h-0 gap-[3px]">
             <div className="receipt-wrap min-h-[250px] overflow-hidden border border-[#b1b1b1] bg-white">
-              <div className="receipt-head grid grid-cols-[34px_minmax(0,1fr)_74px_69px_76px] border-b border-[#c9c9c9] bg-[#ededed] text-[11px] font-semibold">
-                <span>No</span><span>Description</span><span className="text-right">Qty</span><span className="text-right">Price</span><span className="pr-1 text-right">Amount</span>
+              <div className="receipt-head grid grid-cols-[34px_minmax(0,1fr)_82px_69px_76px] border-b border-[#c9c9c9] bg-[#ededed] text-[11px] font-semibold">
+                <span>No</span><span>Description</span><span className="text-center">Weight (kg)</span><span className="text-right">Price</span><span className="pr-1 text-right">Amount</span>
               </div>
               <div className="receipt-lines">
                 {cart.length === 0 ? (
                   <div className="p-5 text-center text-[12px] text-[#777]">Sale is empty — select a product to begin</div>
                 ) : cart.map((item, index) => (
-                  <div className={`receipt-row grid grid-cols-[34px_minmax(0,1fr)_74px_69px_76px] text-[12px] ${index % 2 ? 'bg-[#f1f1f1]' : 'bg-white'}`} key={item.id}>
+                  <div className={`receipt-row grid grid-cols-[34px_minmax(0,1fr)_82px_69px_76px] text-[12px] ${index % 2 ? 'bg-[#f1f1f1]' : 'bg-white'}`} key={item.id}>
                     <span className="pl-1 text-[#666]">{index + 1}</span>
                     <span className="truncate font-medium">{item.name}</span>
-                    <span className="text-right">{item.weight.toFixed(3)}kg</span>
+                    <input
+                      aria-label={`${item.name} weight in kilograms`}
+                      className="h-7 w-full min-w-0 border border-[#aaa] bg-white px-1 text-right text-[13px] font-semibold tabular-nums focus:border-[#337d35] focus:outline-2 focus:outline-[#86d943]"
+                      title="Enter weight in kilograms. For example, 0.600 kg is 600 g."
+                      max={Math.max(0, (stock[item.id] ?? 0) - cart.reduce((total, entry) => (
+                        entry.id !== item.id && getCartProduct(entry)?.id === item.id ? total + entry.weight : total
+                      ), 0))}
+                      min="0.001"
+                      onBlur={() => finishCartWeightEdit(item.id)}
+                      onChange={(event) => updateCartWeight(item.id, event.target.value)}
+                      step="0.001"
+                      type="number"
+                      value={cartWeightDrafts[item.id] ?? item.weight.toFixed(3)}
+                    />
                     <span className="text-right">{currency(item.price)}/kg</span>
-                    <span className="pr-1 text-right">{currency(item.weight * item.price)}</span>
+                    <span className="pr-1 text-right">{cartWeightDrafts[item.id] !== undefined && Number(cartWeightDrafts[item.id]) !== item.weight ? '—' : currency(item.weight * item.price)}</span>
                   </div>
                 ))}
               </div>
@@ -3934,6 +4043,18 @@ function App() {
                         <input autoComplete="url" className="admin-input" onChange={(event) => setCompanyDraft((current) => ({ ...current, website: event.target.value }))} placeholder="www.example.com" type="url" value={companyDraft.website} />
                       </label>
                       <div className="grid gap-3 border border-[#ddd] bg-[#f8f8f6] p-3 sm:col-span-2 sm:grid-cols-3">
+                        <label className="flex min-h-11 items-center gap-3 border border-[#bbb] bg-white px-3 font-semibold sm:col-span-3">
+                          <input
+                            checked={companyDraft.taxEnabled === 'true'}
+                            className="h-5 w-5 accent-[#337d35]"
+                            onChange={(event) => {
+                              setCompanyDraft((current) => ({ ...current, taxEnabled: event.target.checked ? 'true' : 'false' }))
+                              setCompanyError('')
+                            }}
+                            type="checkbox"
+                          />
+                          Enable tax on new sales and quotations
+                        </label>
                         <label className="admin-field">Tax name
                           <input className="admin-input" maxLength="24" onChange={(event) => setCompanyDraft((current) => ({ ...current, taxName: event.target.value }))} placeholder="e.g. GST" value={companyDraft.taxName} />
                         </label>
@@ -3946,7 +4067,12 @@ function App() {
                             <option value="false">Add tax to prices</option>
                           </select>
                         </label>
-                        <p className="text-xs text-[#666] sm:col-span-3">Tax configuration is applied to new sales and quotations. Confirm the rate and receipt wording meet your local requirements.</p>
+                        <p className="text-xs text-[#666] sm:col-span-3">
+                          {companyDraft.taxEnabled === 'true'
+                            ? 'Tax is enabled and will be applied to new sales and quotations using the configured name, rate, and price mode.'
+                            : 'Tax is disabled. The configured tax name, rate, and price mode are saved for when you enable it.'}
+                          {' '}Existing completed sales and quotations keep their original tax amounts. Confirm the rate and receipt wording meet your local requirements.
+                        </p>
                       </div>
                       <label className="admin-field sm:col-span-2">Receipt footer message
                         <textarea className="admin-input min-h-20 resize-y" maxLength={160} onChange={(event) => setCompanyDraft((current) => ({ ...current, receiptMessage: event.target.value }))} placeholder="Thank you for shopping with us!" value={companyDraft.receiptMessage} />
@@ -4238,6 +4364,30 @@ function App() {
                     <div className="border border-[#bbb] bg-white p-3"><span className="text-xs text-[#666]">Expenses ({dayEndExpenses.length})</span><strong className="mt-1 block text-xl">-{currency(dayEndSummary.expenses)}</strong></div>
                     <div className="col-span-2 border border-[#bbb] bg-[#eaf4e3] p-3 sm:col-span-3"><span className="text-xs text-[#555]">Net takings after refunds and expenses</span><strong className="mt-1 block text-2xl">{currency(dayEndSummary.netSales - dayEndSummary.refunds - dayEndSummary.expenses)}</strong></div>
                   </div>
+                  <div className="overflow-x-auto border border-[#bbb] bg-white">
+                    <div className="border-b border-[#ccc] bg-[#e9e9e6] px-3 py-2">
+                      <h3 className="text-sm font-bold">Products sold</h3>
+                      <p className="text-xs text-[#666]">Quantity sold and gross item value before discounts, tax, and refunds.</p>
+                    </div>
+                    <table className="admin-table w-full text-left text-sm">
+                      <thead><tr><th>Product</th><th className="text-right">Sold (kg)</th><th className="text-right">Gross</th><th className="text-right">Returned (kg)</th><th className="text-right">Refunded</th><th className="text-right">Net sales</th></tr></thead>
+                      <tbody>
+                        {dayEndProducts.length ? dayEndProducts.map((product) => (
+                          <tr className="border-t border-[#ddd]" key={product.key}>
+                            <td className="font-semibold">{product.name}</td>
+                            <td className="text-right">{product.quantity.toFixed(3)}</td>
+                            <td className="text-right">{currency(product.grossSales)}</td>
+                            <td className="text-right">{product.refundedQuantity.toFixed(3)}</td>
+                            <td className="text-right">-{currency(product.refundAmount)}</td>
+                            <td className="text-right font-bold">{currency(product.netSales - product.refundAmount)}</td>
+                          </tr>
+                        )) : <tr className="border-t border-[#ddd]"><td className="p-3 text-center text-[#666]" colSpan="6">No products sold in this period.</td></tr>}
+                      </tbody>
+                      <tfoot className="border-t border-[#bbb] bg-[#f6f6f3] font-bold">
+                        <tr><td>Total</td><td className="text-right">{dayEndProducts.reduce((total, product) => total + product.quantity, 0).toFixed(3)}</td><td className="text-right">{currency(dayEndProducts.reduce((total, product) => total + product.grossSales, 0))}</td><td className="text-right">{dayEndProducts.reduce((total, product) => total + product.refundedQuantity, 0).toFixed(3)}</td><td className="text-right">-{currency(dayEndProducts.reduce((total, product) => total + product.refundAmount, 0))}</td><td className="text-right">{currency(dayEndProducts.reduce((total, product) => total + product.netSales - product.refundAmount, 0))}</td></tr>
+                      </tfoot>
+                    </table>
+                  </div>
                   <div className="border border-[#bbb] bg-white">
                     <h3 className="border-b border-[#ccc] bg-[#e9e9e6] px-3 py-2 text-sm font-bold">Tender summary</h3>
                     <div className="divide-y divide-[#e2e2e2] px-3">
@@ -4336,6 +4486,15 @@ function App() {
           <div className="thermal-row"><span>Expenses</span><strong>-{currency(dayEndSummary.expenses)}</strong></div>
           <div className="thermal-rule" />
           <div className="thermal-row thermal-total"><span>NET TAKINGS</span><strong>{currency(dayEndSummary.netSales - dayEndSummary.refunds - dayEndSummary.expenses)}</strong></div>
+          <div className="thermal-rule" />
+          <h2>PRODUCTS SOLD</h2>
+          {dayEndProducts.length ? dayEndProducts.map((product) => (
+            <div className="thermal-row" key={product.key}>
+              <span>{product.name}<small>{product.quantity.toFixed(3)} kg sold · {product.refundedQuantity.toFixed(3)} kg returned · {currency(product.grossSales)} gross · {currency(product.refundAmount)} refunded</small></span>
+              <strong>{currency(product.netSales - product.refundAmount)}</strong>
+            </div>
+          )) : <p>No products sold in this period.</p>}
+          <p className="thermal-center">Product net sales allocate discounts and tax proportionally and deduct refunds.</p>
           <div className="thermal-rule" />
           <h2>TENDER SUMMARY</h2>
           {Array.from(new Set([...Object.keys(dayEndSummary.tenders), ...Object.keys(dayEndSummary.refundTenders), ...Object.keys(dayEndSummary.expenseTenders)])).map((method) => (

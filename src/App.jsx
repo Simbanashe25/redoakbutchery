@@ -252,7 +252,7 @@ function App() {
   const [processingHistory, setProcessingHistory] = useState([])
   const [stocktake, setStocktake] = useState({ productId: 0, quantity: '' })
   const [stocktakeHistory, setStocktakeHistory] = useState([])
-  const [adjustWaste, setAdjustWaste] = useState({ productId: 0, type: 'increase', quantity: '', reason: '' })
+  const [adjustWaste, setAdjustWaste] = useState({ productId: 0, type: 'increase', quantity: '', startingWeight: '', lossPercentage: '', reason: '' })
   const [adjustWasteError, setAdjustWasteError] = useState('')
   const [receipt, setReceipt] = useState({
     productId: 0,
@@ -649,7 +649,11 @@ function App() {
     ? null
     : Number((stocktakeCountedQuantity - stocktakeSystemQuantity).toFixed(3))
   const selectedAdjustmentProduct = products.find((product) => product.id === Number(adjustWaste.productId)) ?? null
-  const adjustmentQuantity = Number(adjustWaste.quantity) || 0
+  const dripLossStartingWeight = Number(adjustWaste.startingWeight) || 0
+  const dripLossPercentage = Number(adjustWaste.lossPercentage) || 0
+  const dripLossQuantity = Number((dripLossStartingWeight * dripLossPercentage / 100).toFixed(3))
+  const dripLossRemainingWeight = Number((dripLossStartingWeight - dripLossQuantity).toFixed(3))
+  const adjustmentQuantity = adjustWaste.type === 'drip_loss' ? dripLossQuantity : Number(adjustWaste.quantity) || 0
   const adjustmentSign = adjustWaste.type === 'increase' ? 1 : -1
   const adjustmentPreview = selectedAdjustmentProduct
     ? Number(((stock[selectedAdjustmentProduct.id] ?? 0) + adjustmentSign * adjustmentQuantity).toFixed(3))
@@ -1452,13 +1456,36 @@ function App() {
   function recordStockAdjustment(event) {
     event.preventDefault()
     const product = selectedAdjustmentProduct
-    const quantity = Number(adjustWaste.quantity)
+    const isDripLoss = adjustWaste.type === 'drip_loss'
+    const startingWeight = Number(adjustWaste.startingWeight)
+    const lossPercentage = Number(adjustWaste.lossPercentage)
+    const quantity = isDripLoss
+      ? Number((startingWeight * lossPercentage / 100).toFixed(3))
+      : Number(adjustWaste.quantity)
     const reason = adjustWaste.reason.trim()
-    if (!product || !/^\d+(?:\.\d{1,3})?$/.test(adjustWaste.quantity) || !Number.isFinite(quantity) || quantity <= 0) {
-      setAdjustWasteError('Choose a product and enter a quantity greater than zero with up to 3 decimal places.')
+    const validWeight = (value) => /^\d+(?:\.\d{1,3})?$/.test(value)
+    if (!product) {
+      setAdjustWasteError('Choose a product before recording a stock change.')
       return
     }
-    if (!reason) {
+    if (isDripLoss && (
+      !validWeight(adjustWaste.startingWeight)
+      || !/^\d+(?:\.\d{1,2})?$/.test(adjustWaste.lossPercentage)
+      || !Number.isFinite(startingWeight)
+      || !Number.isFinite(lossPercentage)
+      || startingWeight <= 0
+      || lossPercentage <= 0
+      || lossPercentage > 100
+      || quantity <= 0
+    )) {
+      setAdjustWasteError('Enter a starting weight to 3 decimal places and a drip-loss percentage greater than 0 and no more than 100. The calculated loss must be at least 0.001 kg.')
+      return
+    }
+    if (!isDripLoss && (!validWeight(adjustWaste.quantity) || !Number.isFinite(quantity) || quantity <= 0)) {
+      setAdjustWasteError('Enter a quantity greater than zero with up to 3 decimal places.')
+      return
+    }
+    if (!reason && !isDripLoss) {
       setAdjustWasteError('Enter a reason for this stock change.')
       return
     }
@@ -1475,7 +1502,10 @@ function App() {
     const entryId = `manual-${createdAtMs}`
     const type = isIncrease
       ? 'Stock adjustment (increase)'
-      : adjustWaste.type === 'waste' ? 'Waste' : 'Stock adjustment (decrease)'
+      : isDripLoss ? 'Drip loss' : adjustWaste.type === 'waste' ? 'Waste' : 'Stock adjustment (decrease)'
+    const reference = isDripLoss
+      ? `Drip loss: ${quantity.toFixed(3)} kg (${lossPercentage.toFixed(2)}%); ${startingWeight.toFixed(3)} kg before, ${Number((startingWeight - quantity).toFixed(3)).toFixed(3)} kg after${reason ? ` · ${reason}` : ''}`
+      : reason
     setStock((current) => ({
       ...current,
       [product.id]: Number(((current[product.id] ?? 0) + change).toFixed(3)),
@@ -1488,10 +1518,10 @@ function App() {
       product: product.name,
       type,
       quantity: change,
-      reference: reason,
+      reference,
       operator: currentUsername,
     }, ...current])
-    setAdjustWaste((current) => ({ ...current, quantity: '', reason: '' }))
+    setAdjustWaste((current) => ({ ...current, quantity: '', startingWeight: '', lossPercentage: '', reason: '' }))
     setAdjustWasteError('')
     setNotice(`${type} recorded · ${product.name} ${change > 0 ? '+' : ''}${change.toFixed(3)} kg`)
     window.setTimeout(() => setNotice(''), 2800)
@@ -2036,7 +2066,7 @@ function App() {
   const inStockCount = Object.values(stock).filter((quantity) => quantity > 0).length
   const isShopStateDirty = serializedShopSnapshot !== lastSavedSnapshotRef.current
   const adjustmentMovements = inventoryMovements.filter((movement) => (
-    movement.type.startsWith('Stock adjustment') || movement.type === 'Waste'
+    movement.type.startsWith('Stock adjustment') || movement.type === 'Waste' || movement.type === 'Drip loss'
   ))
   const detailedReport = useMemo(() => {
     const isInReportRange = (timestamp) => {
@@ -2192,7 +2222,7 @@ function App() {
       timestamp: stocktakeEntry.createdAtMs ?? stocktakeEntry.createdAt,
     }))
     inventoryMovements
-      .filter((movement) => movement.type === 'Waste' || movement.type.startsWith('Stock adjustment'))
+      .filter((movement) => movement.type === 'Waste' || movement.type === 'Drip loss' || movement.type.startsWith('Stock adjustment'))
       .forEach((movement) => addEntry({
         id: `movement-${movement.id}`,
         category: 'Stock',
@@ -3732,7 +3762,7 @@ function App() {
                     <section className="mt-5 overflow-x-auto border border-[#bbb] bg-white">
                       <div className="border-b border-[#ccc] bg-[#e9e9e6] px-3 py-2">
                         <h4 className="font-bold">Inventory movement ledger</h4>
-                        <p className="text-xs text-[#666]">Auditable stock changes from completed sales, refunds, deliveries, and stocktake adjustments.</p>
+                        <p className="text-xs text-[#666]">Auditable stock changes from sales, refunds, deliveries, stocktake, manual adjustments, waste, and drip loss.</p>
                       </div>
                       <table className="admin-table w-full text-left text-sm">
                         <thead><tr><th>Date</th><th>Product</th><th>Movement</th><th className="text-right">Quantity change</th><th>Reference</th><th>Operator</th></tr></thead>
@@ -3758,7 +3788,7 @@ function App() {
                   <div className="max-w-[1000px] space-y-5">
                     <div>
                       <h3 className="mb-1 text-xl font-bold">Adjust stock & record waste</h3>
-                      <p className="text-sm text-[#666]">Record a stock correction or remove spoiled, damaged, or otherwise wasted product. Every change requires a reason and is added to the inventory movement ledger.</p>
+                      <p className="text-sm text-[#666]">Record stock corrections, waste, or drip loss. Drip loss is calculated from before-and-after weights and recorded in the inventory movement ledger.</p>
                     </div>
                     <form className="grid gap-4 border border-[#bbb] bg-white p-4 sm:grid-cols-2 sm:p-5" onSubmit={recordStockAdjustment}>
                       <label className="admin-field sm:col-span-2">Product
@@ -3771,29 +3801,46 @@ function App() {
                           <option value="increase">Increase stock (correction)</option>
                           <option value="decrease">Decrease stock (correction)</option>
                           <option value="waste">Record waste</option>
+                          <option value="drip_loss">Record drip loss</option>
                         </select>
                       </label>
-                      <label className="admin-field">Quantity (kg)
-                        <input aria-label="Stock change quantity (kg)" className="admin-input" min="0.001" onChange={(event) => { setAdjustWaste((current) => ({ ...current, quantity: event.target.value })); setAdjustWasteError('') }} placeholder="e.g. 0.500" required step="0.001" type="number" value={adjustWaste.quantity} />
-                      </label>
-                      <label className="admin-field sm:col-span-2">Reason
-                        <input aria-label="Reason for stock change" className="admin-input" maxLength="120" onChange={(event) => { setAdjustWaste((current) => ({ ...current, reason: event.target.value })); setAdjustWasteError('') }} placeholder={adjustWaste.type === 'waste' ? 'e.g. Spoiled during storage' : 'e.g. Supplier correction or damaged stock'} required value={adjustWaste.reason} />
-                      </label>
+                      {adjustWaste.type === 'drip_loss' ? (
+                        <>
+                          <label className="admin-field">Starting weight (kg)
+                            <input aria-label="Starting weight (kg)" className="admin-input" min="0.001" onChange={(event) => { setAdjustWaste((current) => ({ ...current, startingWeight: event.target.value })); setAdjustWasteError('') }} placeholder="e.g. 10.000" required step="0.001" type="number" value={adjustWaste.startingWeight} />
+                          </label>
+                          <label className="admin-field">Drip loss (%)
+                            <input aria-label="Drip loss percentage" className="admin-input" min="0.01" max="100" onChange={(event) => { setAdjustWaste((current) => ({ ...current, lossPercentage: event.target.value })); setAdjustWasteError('') }} placeholder="e.g. 2.50" required step="0.01" type="number" value={adjustWaste.lossPercentage} />
+                          </label>
+                          <label className="admin-field sm:col-span-2">Notes (optional)
+                            <input aria-label="Notes for drip loss" className="admin-input" maxLength="120" onChange={(event) => { setAdjustWaste((current) => ({ ...current, reason: event.target.value })); setAdjustWasteError('') }} placeholder="e.g. Overnight chilling" value={adjustWaste.reason} />
+                          </label>
+                        </>
+                      ) : (
+                        <>
+                          <label className="admin-field">Quantity (kg)
+                            <input aria-label="Stock change quantity (kg)" className="admin-input" min="0.001" onChange={(event) => { setAdjustWaste((current) => ({ ...current, quantity: event.target.value })); setAdjustWasteError('') }} placeholder="e.g. 0.500" required step="0.001" type="number" value={adjustWaste.quantity} />
+                          </label>
+                          <label className="admin-field sm:col-span-2">Reason
+                            <input aria-label="Reason for stock change" className="admin-input" maxLength="120" onChange={(event) => { setAdjustWaste((current) => ({ ...current, reason: event.target.value })); setAdjustWasteError('') }} placeholder={adjustWaste.type === 'waste' ? 'e.g. Spoiled during storage' : 'e.g. Supplier correction or damaged stock'} required value={adjustWaste.reason} />
+                          </label>
+                        </>
+                      )}
                       <div className="grid gap-3 sm:col-span-2 sm:grid-cols-3">
                         <div className="border border-[#ddd] bg-[#f4f4f1] p-3 text-sm">Current stock<strong className="mt-1 block text-lg">{selectedAdjustmentProduct ? (stock[selectedAdjustmentProduct.id] ?? 0).toFixed(3) : '0.000'} kg</strong></div>
-                        <div className="border border-[#ddd] bg-[#f4f4f1] p-3 text-sm">Stock change<strong className={`mt-1 block text-lg ${adjustmentSign > 0 ? 'text-[#315e25]' : 'text-[#a33a2b]'}`}>{adjustWaste.quantity ? `${adjustmentSign > 0 ? '+' : '−'}${adjustmentQuantity.toFixed(3)} kg` : 'Enter a quantity'}</strong></div>
+                        <div className="border border-[#ddd] bg-[#f4f4f1] p-3 text-sm">{adjustWaste.type === 'drip_loss' ? 'Calculated drip loss' : 'Stock change'}<strong className={`mt-1 block text-lg ${adjustmentSign > 0 ? 'text-[#315e25]' : 'text-[#a33a2b]'}`}>{adjustWaste.type === 'drip_loss' ? (!adjustWaste.startingWeight || !adjustWaste.lossPercentage ? 'Enter weight and percentage' : dripLossPercentage > 100 ? 'Maximum is 100%' : dripLossQuantity <= 0 ? 'Calculated loss is below 0.001 kg' : `−${dripLossQuantity.toFixed(3)} kg (${dripLossPercentage.toFixed(2)}%)`) : (adjustWaste.quantity ? `${adjustmentSign > 0 ? '+' : '−'}${adjustmentQuantity.toFixed(3)} kg` : 'Enter a quantity')}</strong>{adjustWaste.type === 'drip_loss' && adjustWaste.startingWeight && adjustWaste.lossPercentage && dripLossPercentage > 0 && dripLossPercentage <= 100 && dripLossQuantity > 0 && <span className="mt-1 block text-xs text-[#666]">Estimated remaining weight: {dripLossRemainingWeight.toFixed(3)} kg</span>}</div>
                         <div className="border border-[#ddd] bg-[#eaf4e3] p-3 text-sm">After recording<strong className="mt-1 block text-lg">{adjustmentPreview.toFixed(3)} kg</strong></div>
                       </div>
                       {adjustWasteError && <p aria-live="assertive" className="border border-[#e5aaaa] bg-[#fff0f0] p-3 text-sm font-semibold text-[#a51f1f] sm:col-span-2">{adjustWasteError}</p>}
                       <div className="flex justify-end sm:col-span-2">
-                        <button className={`touch-button ${adjustWaste.type === 'waste' ? 'red' : 'yellow'} min-h-12 px-5 text-sm font-bold`} type="submit">{adjustWaste.type === 'waste' ? 'Record waste' : 'Save stock adjustment'}</button>
+                        <button className={`touch-button ${adjustWaste.type === 'waste' || adjustWaste.type === 'drip_loss' ? 'red' : 'yellow'} min-h-12 px-5 text-sm font-bold`} type="submit">{adjustWaste.type === 'drip_loss' ? 'Record drip loss' : adjustWaste.type === 'waste' ? 'Record waste' : 'Save stock adjustment'}</button>
                       </div>
                     </form>
                     <section className="overflow-x-auto border border-[#bbb] bg-white">
                       <div className="flex items-center justify-between gap-3 border-b border-[#ccc] bg-[#e9e9e6] px-3 py-2">
                         <div>
-                          <h4 className="font-bold">Adjustment & waste history</h4>
-                          <p className="text-xs text-[#666]">Manual corrections and waste records, newest first.</p>
+                          <h4 className="font-bold">Adjustment, waste & drip-loss history</h4>
+                          <p className="text-xs text-[#666]">Manual corrections, waste, and drip-loss records, newest first.</p>
                         </div>
                         <span className="text-xs text-[#666]">{adjustmentMovements.length} record{adjustmentMovements.length === 1 ? '' : 's'}</span>
                       </div>
@@ -3809,7 +3856,7 @@ function App() {
                               <td>{movement.reference}</td>
                               <td>{movement.operator}</td>
                             </tr>
-                          )) : <tr className="border-t border-[#ddd]"><td className="p-4 text-center text-[#666]" colSpan="6">No stock adjustments or waste have been recorded.</td></tr>}
+                          )) : <tr className="border-t border-[#ddd]"><td className="p-4 text-center text-[#666]" colSpan="6">No stock adjustments, waste, or drip loss have been recorded.</td></tr>}
                         </tbody>
                       </table>
                       {renderPagination('adjustment-waste-history', adjustmentMovements.length, 'adjustments and waste records')}

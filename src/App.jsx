@@ -26,6 +26,7 @@ const initialCompanyDetails = {
 }
 const categoryName = (category) => category.replace(/^\d+\s+/, '')
 const hasSellingPrice = (product) => Number.isFinite(Number(product.price)) && Number(product.price) > 0
+const operatorDisplayName = (username) => username.includes('@') ? username.slice(0, username.indexOf('@')) : username
 const categoryClassName = (category) => {
   const name = categoryName(category).toLowerCase().replace(/\s+/g, '-')
   return ['fish', 'seafood', 'poultry', 'pork', 'beef', 'lamb'].includes(name) ? name : 'custom'
@@ -2497,7 +2498,7 @@ function App() {
               })}
             </time>
             <span className="hidden text-[#737373] sm:inline">|</span>
-            <span className="hidden font-semibold tracking-wide sm:inline">{currentUsername.toLocaleUpperCase()}</span>
+            <span className="hidden font-semibold tracking-wide sm:inline">{operatorDisplayName(currentUsername).toLocaleUpperCase()}</span>
             <span className="text-[#aaa]">|</span>
             <button className="touch-button gray max-w-[180px] truncate px-2 py-1 text-left text-[#555] hover:underline" onClick={() => runAction('Customer')} type="button">{selectedCustomer?.name ?? 'Cash Customer'}</button>
           </div>
@@ -4473,7 +4474,7 @@ function App() {
             {companyDetails.website && <span>{companyDetails.website}</span>}
             <strong>DAY END SUMMARY</strong>
             <span>{new Date().toLocaleString()}</span>
-            <span>Till 01 · {currentUsername.toLocaleUpperCase()}</span>
+            <span>Till 01 · {operatorDisplayName(currentUsername).toLocaleUpperCase()}</span>
           </header>
           <div className="thermal-rule" />
           <div className="thermal-row"><span>Completed sales</span><strong>{dayEndSales.length}</strong></div>

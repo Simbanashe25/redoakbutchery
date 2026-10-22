@@ -478,14 +478,63 @@ function App() {
         setSyncError('Another signed-in session changed shop data while you had unsaved changes. Reload the latest data before continuing.')
       })
       .subscribe((status, error) => {
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          setRealtimeError(`Live updates are unavailable: ${error?.message ?? status}. Shop data will still save; reload to fetch the latest changes.`)
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          setRealtimeError(`Live updates disconnected (${error?.message ?? status}). The app will check for other register updates automatically; shop data will still save.`)
+        } else if (status === 'SUBSCRIBED') {
+          setRealtimeError('')
         }
       })
     return () => {
       supabase.removeChannel(channel)
     }
   }, [isAuthenticated, authUser, shopReady])
+
+  useEffect(() => {
+    if (!supabase || !isAuthenticated || !authUser || !shopReady || !realtimeError || syncStatus === 'conflict' || syncStatus === 'error') return undefined
+
+    let active = true
+    let checking = false
+    const timer = window.setInterval(async () => {
+      if (checking) return
+      checking = true
+      try {
+        const { data: state, error: revisionError } = await supabase
+          .from('butcher_shop_state')
+          .select('revision')
+          .eq('id', 'main')
+          .maybeSingle()
+        if (revisionError) throw revisionError
+        if (!active) return
+        if (!state) throw new Error('The shop revision is unavailable.')
+
+        const remoteRevision = Number(state.revision) || 0
+        if (remoteRevision <= revisionRef.current) return
+        if (currentSnapshotRef.current !== lastSavedSnapshotRef.current || saveInFlightRef.current) {
+          setSyncStatus('conflict')
+          setSyncError('Another signed-in session changed shop data while you had unsaved changes. Reload the latest data before continuing.')
+          return
+        }
+
+        const { data, error } = await supabase.rpc('load_butcher_shop_state')
+        if (error) throw error
+        if (!active) return
+        const latestRevision = Number(data?.revision) || 0
+        if (latestRevision > revisionRef.current) applyShopState(data?.data ?? emptyShopState, latestRevision)
+        setRealtimeError('Live updates are disconnected. The app is checking for other register updates automatically; shop data will still save.')
+      } catch (error) {
+        if (active) {
+          setRealtimeError(`Live updates are disconnected. Automatic update check failed: ${error.message}. Shop data will still save when the connection is available.`)
+        }
+      } finally {
+        checking = false
+      }
+    }, 15000)
+
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [isAuthenticated, authUser, shopReady, realtimeError, syncStatus])
 
   async function retryShopSync() {
     if (syncStatus === 'conflict' || !shopReady) {

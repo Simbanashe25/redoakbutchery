@@ -153,6 +153,9 @@ function App() {
   const [loginPassword, setLoginPassword] = useState('')
   const [loginError, setLoginError] = useState('')
   const [loginLoading, setLoginLoading] = useState(false)
+  const [installPrompt, setInstallPrompt] = useState(null)
+  const [isAppInstalled, setIsAppInstalled] = useState(false)
+  const [installMessage, setInstallMessage] = useState('')
   const [staffAccounts, setStaffAccounts] = useState([])
   const [staffLoading, setStaffLoading] = useState(false)
   const [staffCreating, setStaffCreating] = useState(false)
@@ -292,6 +295,30 @@ function App() {
   useEffect(() => {
     const timer = window.setInterval(() => setCurrentDateTime(new Date()), 1000)
     return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    const displayMode = window.matchMedia('(display-mode: standalone)')
+    const updateInstalledState = () => setIsAppInstalled(displayMode.matches || window.navigator.standalone === true)
+    const handleBeforeInstallPrompt = (event) => {
+      event.preventDefault()
+      setInstallPrompt(event)
+    }
+    const handleAppInstalled = () => {
+      setIsAppInstalled(true)
+      setInstallPrompt(null)
+      setInstallMessage('App installed successfully.')
+    }
+
+    updateInstalledState()
+    displayMode.addEventListener('change', updateInstalledState)
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+    window.addEventListener('appinstalled', handleAppInstalled)
+    return () => {
+      displayMode.removeEventListener('change', updateInstalledState)
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+      window.removeEventListener('appinstalled', handleAppInstalled)
+    }
   }, [])
 
   function applyShopState(value, revision) {
@@ -2464,6 +2491,35 @@ function App() {
     setLoginError('')
   }
 
+  async function installApp() {
+    if (!installPrompt) {
+      const isIos = /iPad|iPhone|iPod/.test(window.navigator.userAgent)
+      setInstallMessage(isIos
+        ? 'To install, tap Share in Safari, then choose Add to Home Screen.'
+        : 'To install, open your browser menu and choose Install app or Add to Home Screen. If that option is missing, open this site over HTTPS and make sure the service worker has finished loading.')
+      return
+    }
+
+    try {
+      await installPrompt.prompt()
+      const { outcome } = await installPrompt.userChoice
+      setInstallPrompt(null)
+      setInstallMessage(outcome === 'accepted'
+        ? 'App installation started.'
+        : 'Installation was cancelled. You can install it later from the browser menu.')
+    } catch (error) {
+      console.error('Unable to start PWA installation:', error)
+      setInstallPrompt(null)
+      setInstallMessage('The browser could not start installation. Try the Install app option in your browser menu.')
+    }
+  }
+
+  const installButton = !isAppInstalled && (
+    <button className="touch-button yellow min-h-7 px-2 text-xs font-bold" onClick={installApp} type="button">
+      Install app
+    </button>
+  )
+
   if (isAuthenticated && !shopReady && syncError) {
     return (
       <main className="auth-screen flex min-h-screen items-center justify-center px-4 py-8">
@@ -2481,6 +2537,8 @@ function App() {
     return (
       <main className="auth-screen flex min-h-screen items-center justify-center px-4 py-8">
         <section aria-labelledby="login-title" className="w-full max-w-[400px]">
+          {!isAppInstalled && <div className="mb-4 flex flex-col items-center gap-2">{installButton}</div>}
+          {installMessage && <p aria-live="polite" className="mb-4 border border-[#d7c47d] bg-[#fff8d8] p-3 text-sm text-[#4e4528]" role="status">{installMessage}</p>}
           <div className="mb-7 text-center">
             {companyDetails.logoDataUrl && <img alt={`${companyDetails.name} logo`} className="mx-auto mb-3 max-h-16 max-w-40 object-contain" src={companyDetails.logoDataUrl} />}
             <p className="text-xs font-bold uppercase tracking-[.2em] text-[#9a513c]">{companyDetails.name}</p>
@@ -2534,6 +2592,7 @@ function App() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="hidden border border-[#a8a8a8] bg-white px-2 py-0.5 sm:inline">Till 01</span>
+            {installButton}
             {(isShopStateDirty || syncStatus === 'saving') && syncStatus !== 'error' && syncStatus !== 'conflict' && (
               <span aria-label="Saving changes" className="inline-flex h-7 w-7 items-center justify-center text-[#8a6a12]" role="status" title="Saving changes">
                 <span aria-hidden="true" className="h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" />
@@ -2543,6 +2602,8 @@ function App() {
             <button aria-label="Sign out" className="touch-button gray min-h-7 px-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50" disabled={syncStatus === 'saving' || (isShopStateDirty && syncStatus !== 'error' && syncStatus !== 'conflict')} onClick={signOut} title={isShopStateDirty ? 'Wait for shop changes to sync before signing out.' : undefined} type="button">Sign out</button>
           </div>
         </header>
+
+        {installMessage && <p aria-live="polite" className="border-b border-[#d7c47d] bg-[#fff8d8] px-3 py-2 text-sm text-[#4e4528]" role="status">{installMessage}</p>}
 
         {(syncStatus === 'error' || syncStatus === 'conflict' || realtimeError) && (
           <div aria-live="polite" className="flex flex-wrap items-center justify-between gap-2 border-b border-[#e5aaaa] bg-[#fff0f0] px-3 py-2 text-sm text-[#8e2727]">
